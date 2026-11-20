@@ -1,0 +1,124 @@
+AGENTIC CLINIC (TERRA) - PROJECT DOCUMENTATION
+================================================
+Step-by-step build log. Each step says what was done, which files, and how it was checked.
+All data is fictional. This is an academic demo, not a medical product.
+
+STOP POINTS (set by the owner on 2026-11-21)
+- Build everything locally.
+- Do NOT deploy to Railway yet (owner is switching accounts).
+- Do NOT create or deploy the Cloudflare Worker yet.
+- The assistant uses a local rule-based provider until then.
+
+------------------------------------------------
+STEP 0 - Project setup (2026-11-21)
+------------------------------------------------
+What: Inspected the existing files. The root holds the Terra static prototype (index.html,
+styles.css, app.js), two planning documents, and a separate git repo (Data-Science-Project).
+Note: the root folder name ends with a space. Quote every path.
+
+Decisions (docs/decisions.md): Railway PostgreSQL, demo sessions instead of OAuth, deterministic
+"Demo forecast" instead of Chronos, FastAPI on Railway (later), Cloudflare Workers AI for the
+assistant only (later), frontend local first, git at the repo root, assistant behind a provider
+interface.
+
+Files created:
+- CLAUDE.md                          project rules, folder map, orchestrator and worker rules
+- docs/progress.md                   phase checklist
+- docs/decisions.md                  decision log
+- docs/known-issues.md               gotchas
+- docs/api-contract.md               design, states, tables, API, assistant rules (source of truth)
+- .claude/agents/builder.md          Haiku worker that writes code from a brief
+- .claude/agents/reviewer.md         Haiku worker that reviews a diff against a brief
+- .claude/skills/reflect/SKILL.md    end-of-session retrospective
+- .gitignore, .env.example           git ignores (secrets, node_modules, Data-Science-Project)
+- docker-compose.yml                 local PostgreSQL 16 on port 5433
+Commands:
+- git init (repo root)
+- open -a Docker; docker compose up -d --wait
+- CREATE DATABASE terra_test (for tests)
+Check: docker compose ps shows the db container healthy.
+
+Manual settings the owner must set (not possible from inside the session):
+- /effort xhigh in Claude Code, main model Opus.
+- export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=40 before launching Claude Code.
+
+------------------------------------------------
+STEP 1 - Backend foundation (2026-11-21)
+------------------------------------------------
+What: FastAPI app, SQLAlchemy 2 models for the 9 tables in docs/api-contract.md, Alembic
+initial migration, deterministic idempotent seed, /health, demo-session auth.
+Files (backend/): requirements.txt, app/{config,db,models,deps,main,seed}.py,
+app/routes/auth.py, alembic.ini, migrations/, tests/{conftest,test_health,test_seed,test_auth}.py
+Design points:
+- The double-booking guard is a partial unique index on appointments(slot_id) WHERE status='booked'.
+- Auth: cookie "session" (httpOnly, SameSite=Lax) pointing at a row in the sessions table,
+  8-hour expiry. Roles: patient, receptionist, admin.
+- Seed is deterministic (random seed 42) and wipes all tables before inserting
+  (see docs/known-issues.md).
+How to run locally:
+  docker compose up -d --wait
+  cd backend && .venv/bin/alembic upgrade head && .venv/bin/python -m app.seed
+  .venv/bin/uvicorn app.main:app --reload --port 8000
+Checked: pytest 19 passed; ruff clean; alembic + seed twice leaves 6 doctors, 60 daily_counts,
+11 appointments.
+
+------------------------------------------------
+STEP 2 - Frontend shell (2026-11-21)
+------------------------------------------------
+What: Next.js 16 + React 19 + Tailwind 4 + Three.js app in Terra style (warm cream palette,
+serif headings, top navigation). Login with three demo roles, Overview, Doctors (browse and
+book), Appointments (list, reschedule, cancel).
+Files (frontend/): app/{layout,page,globals}.tsx|css, app/login, app/doctors, app/appointments,
+components/{AppShell,CareArt,Modal,SlotPicker,Toast,ui,AppointmentDialogs}.tsx,
+lib/{api,auth,use-loader,format}.ts(x), .env.local.example
+Notes: CareArt is the Three.js hero (torus knot and orbiting spheres); it falls back to a plain
+panel if WebGL is not available. API base URL comes from NEXT_PUBLIC_API_URL.
+How to run locally: cd frontend && npm install && npm run dev  (http://localhost:3000)
+Checked: npm run lint exit 0; npm run build exit 0 and lists /, /login, /doctors, /appointments.
+
+------------------------------------------------
+STEP 3 - Appointment lifecycle and clinic APIs (2026-11-21)
+------------------------------------------------
+What: book, reschedule and cancel in ONE service (backend/app/services/appointments.py), the only
+code that changes appointment status. Plus doctors, free slots, guides and dashboard endpoints.
+Rules: booked can move to booked (new slot) or cancelled. cancelled, completed and no_show are
+final. A second booking of one slot returns 409 slot_taken (enforced by the database index, tested
+with two concurrent writers). Past slots return 422. Patients only touch their own appointments.
+Checked: pytest 94 passed (this includes step 4); ruff clean; grep proves no appointment status
+write outside the service.
+
+------------------------------------------------
+STEP 4 - Insights API with Demo forecast (2026-11-21)
+------------------------------------------------
+What: GET /api/insights (receptionist and admin only). 30-day totals, cancellation and no-show
+rates, history, and a 7-day forecast labelled "Demo forecast". Method: mean of the same weekday
+over the previous 4 weeks of synthetic daily_counts. No machine-learning model is used and the
+word Chronos never appears.
+Files: backend/app/services/insights.py, backend/app/routes/insights.py, tests/test_insights.py
+Checked: 19 insights tests pass; full suite 94 passed.
+
+------------------------------------------------
+STEP 5 - Assistant (local rule-based provider) (2026-11-21)
+------------------------------------------------
+What: provider interface (backend/app/services/assistant_provider.py), pending-action store with
+explicit states pending -> confirmed | dismissed | failed (backend/app/services/assistant.py),
+three endpoints, and the /assistant chat page.
+Rules: the assistant only answers clinic-guide questions and proposes appointment actions. It never
+changes anything itself. A proposal is stored as a pending action; only the Confirm button runs it,
+through the same appointment service the normal screens use. A second confirm returns 409. Only one
+pending action per user. No network or Cloudflare code exists in the backend.
+Checked: 40 assistant tests; full backend suite 134 passed; ruff clean; grep finds no network code.
+Known limits are listed in CONTINUE-PROMPT.md section 5.
+
+------------------------------------------------
+STEP 6 - Frontend Assistant and Insights pages (2026-11-21)
+------------------------------------------------
+What: /assistant (chat, suggestion chips, guide citations, confirmation card) and /insights (staff
+only: stat tiles, 30-day SVG chart, "Demo forecast" tag, method caption, 7-day chart and table).
+Checked: npm run lint exit 0; npm run build exit 0 with 7 routes. NOT yet run in a browser.
+
+------------------------------------------------
+STATE AT HAND-OFF (2026-11-21)
+------------------------------------------------
+Stopped by the owner. Everything is local. Not done: live browser verification, demo script,
+frontend tests, Railway, Cloudflare. Resume with CONTINUE-PROMPT.md.
